@@ -1,0 +1,251 @@
+# =============================================================================
+# TOPIC 2 : SATELLITE RE-ENTRY TRAJECTORY PREDICTION
+# Feed-Forward Neural Network using TensorFlow / Keras
+#
+# PROBLEM :
+#   When a satellite loses altitude and begins falling back into Earth's
+#   atmosphere, we want to predict its LANDING DISTANCE from a reference
+#   point (in km) given its initial orbital state.
+#
+# INPUTS  (features) :
+#   x1 - Initial altitude      (km)         e.g. 200 – 400 km
+#   x2 - Entry velocity        (km/s)        e.g. 7.5 – 8.5 km/s
+#   x3 - Entry angle           (degrees)     e.g. -8 to -1  (negative = downward)
+#   x4 - Ballistic coefficient (kg/m²)       e.g. 50 – 200
+#
+# OUTPUT  (target) :
+#   y  - Landing distance from reference point (km)
+#
+# DATA GENERATION NOTE :
+#   Real re-entry physics uses complex differential equations.
+#   Here we simulate data with a physics-inspired formula plus noise,
+#   so students can understand the concept without heavy mathematics.
+#
+# SPLIT : First 80% → Training | Last 20% → Testing
+# =============================================================================
+
+import numpy as np
+import matplotlib.pyplot as plt
+import tensorflow as tf
+from tensorflow import keras
+
+# ── reproducibility ──────────────────────────────────────────────────────────
+np.random.seed(42)
+tf.random.set_seed(42)
+
+
+# =============================================================================
+# SECTION 1 : GENERATE RAW DATA  (no scaling here)
+# =============================================================================
+
+N = 500   # total number of data samples
+
+# Raw input features  (physically meaningful ranges, unscaled)
+altitude    = np.random.uniform(200,  400, N)   # km
+velocity    = np.random.uniform(7.5,  8.5, N)   # km/s
+entry_angle = np.random.uniform(-8,   -1,  N)   # degrees
+ballistic   = np.random.uniform(50,   200, N)   # kg/m²
+
+# Physics-inspired target formula  (simplified, not exact physics)
+#   Higher altitude  → longer flight → more distance
+#   Steeper angle    → shorter distance  (angle is negative, so abs increases)
+#   Higher velocity  → more range
+#   Higher ballistic → less drag → more range
+noise = np.random.normal(0, 30, N)   # realistic measurement noise (km)
+
+landing_distance = (
+    0.8  * altitude
+    + 120 * velocity
+    - 50  * np.abs(entry_angle)
+    + 0.3 * ballistic
+    #  + noise
+)
+
+# Stack inputs into a 2-D array  shape: (500, 4)
+X_raw = np.column_stack([altitude, velocity, entry_angle, ballistic])
+y_raw = landing_distance          # shape: (500,)
+
+print("=" * 55)
+print("SECTION 1 : Raw Data Summary")
+print("=" * 55)
+print(f"  Total samples          : {N}")
+print(f"  Input shape (X_raw)    : {X_raw.shape}")
+print(f"  Output shape (y_raw)   : {y_raw.shape}")
+print(f"  Landing dist range     : {y_raw.min():.1f} – {y_raw.max():.1f} km")
+print()
+
+
+# =============================================================================
+# SECTION 2 : TRAIN / TEST SPLIT  (80% train, 20% test — ordered split)
+# =============================================================================
+
+split = int(0.8 * N)          # 400 training, 100 testing
+
+X_train_raw = X_raw[:split]   # first 80%
+X_test_raw  = X_raw[split:]   # last  20%
+
+y_train_raw = y_raw[:split]
+y_test_raw  = y_raw[split:]
+
+print("SECTION 2 : Train / Test Split")
+print("-" * 55)
+print(f"  Training samples : {X_train_raw.shape[0]}")
+print(f"  Testing  samples : {X_test_raw.shape[0]}")
+print()
+
+
+# =============================================================================
+# SECTION 3 : FEATURE SCALING  (Min-Max scaling using TRAINING stats only)
+#
+#   Formula : X_scaled = (X - X_min) / (X_max - X_min)
+#   Result  : every feature is in the range [0, 1]
+#
+#   IMPORTANT : compute min/max on TRAIN set, apply same numbers to TEST set.
+#   This prevents "data leakage" — the network must not see test statistics.
+# =============================================================================
+
+X_min = X_train_raw.min(axis=0)   # min of each column (4 values)
+X_max = X_train_raw.max(axis=0)   # max of each column (4 values)
+
+X_train = (X_train_raw - X_min) / (X_max - X_min)
+X_test  = (X_test_raw  - X_min) / (X_max - X_min)
+
+# Scale the output (y) using training min/max
+y_min = y_train_raw.min()
+y_max = y_train_raw.max()
+
+y_train = (y_train_raw - y_min) / (y_max - y_min)
+y_test  = (y_test_raw  - y_min) / (y_max - y_min)
+
+print("SECTION 3 : Feature Scaling (Min-Max)")
+print("-" * 55)
+print(f"  X_train min per feature : {X_min.round(2)}")
+print(f"  X_train max per feature : {X_max.round(2)}")
+print(f"  y_train range (raw)     : {y_min:.1f} – {y_max:.1f} km")
+print(f"  X_train scaled range    : {X_train.min():.2f} – {X_train.max():.2f}")
+print()
+
+
+# =============================================================================
+# SECTION 4 : BUILD THE FEED-FORWARD NEURAL NETWORK
+#
+#   Architecture :
+#     Input layer  → 4 neurons  (one per feature)
+#     Hidden 1     → 16 neurons, ReLU activation
+#     Hidden 2     → 8  neurons, ReLU activation
+#     Output layer → 1 neuron,  Linear  (regression output)
+#
+#   ReLU  : f(x) = max(0, x) — introduces non-linearity, simple to explain
+#   Linear: output = weighted sum, suitable for regression (unbounded values)
+# =============================================================================
+
+model = keras.Sequential([
+    keras.layers.Input(shape=(4,)),           # 4 input features
+    keras.layers.Dense(16, activation='relu'), # hidden layer 1
+    keras.layers.Dense(8,  activation='relu'), # hidden layer 2
+    keras.layers.Dense(1)                      # output: predicted landing dist
+], name="ReEntry_FFNN")
+
+model.summary()
+print()
+
+
+# =============================================================================
+# SECTION 5 : COMPILE AND TRAIN
+#
+#   Loss     : Mean Squared Error (MSE) — penalises large prediction errors
+#   Optimizer: Adam — adaptive learning rate, works well out-of-the-box
+#   Epochs   : 150 — number of full passes through the training data
+#   Verbose 0: suppress per-epoch output (we plot history instead)
+# =============================================================================
+
+model.compile(optimizer='adam', loss='mse', metrics=['mae'])
+
+history = model.fit(
+    X_train, y_train,
+    epochs=150,
+    batch_size=32,
+    validation_split=0.1,   # 10% of train used as validation during training
+    verbose=0
+)
+
+print("SECTION 5 : Training complete")
+print("-" * 55)
+final_train_loss = history.history['loss'][-1]
+final_val_loss   = history.history['val_loss'][-1]
+print(f"  Final training MSE   : {final_train_loss:.4f}")
+print(f"  Final validation MSE : {final_val_loss:.4f}")
+print()
+
+
+# =============================================================================
+# SECTION 6 : PREDICT AND INVERSE-SCALE BACK TO ORIGINAL UNITS (km)
+#
+#   The network outputs scaled values [0, 1].
+#   We convert back: y_original = y_scaled * (y_max - y_min) + y_min
+# =============================================================================
+
+y_train_pred_scaled = model.predict(X_train, verbose=0).flatten()
+y_test_pred_scaled  = model.predict(X_test,  verbose=0).flatten()
+
+# Inverse transform — bring predictions back to km
+y_train_pred = y_train_pred_scaled * (y_max - y_min) + y_min
+y_test_pred  = y_test_pred_scaled  * (y_max - y_min) + y_min
+
+# Also recover original (unscaled) targets for plotting
+y_train_actual = y_train_raw
+y_test_actual  = y_test_raw
+
+train_idx = np.arange(split)          # sample indices 0..399
+test_idx  = np.arange(split, N)       # sample indices 400..499
+
+
+# =============================================================================
+# SECTION 7 : PLOT — Training & Testing Predictions vs Real Data
+#
+#   Single figure with 2 subplots:
+#     Left  : Loss curve (training vs validation)
+#     Right : Actual vs Predicted landing distance for all samples
+# =============================================================================
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+fig.suptitle("Topic 2 — Re-Entry Trajectory Prediction (FFNN)", fontsize=13, fontweight='bold')
+
+# ── LEFT : Loss curve ────────────────────────────────────────────────────────
+ax1 = axes[0]
+ax1.plot(history.history['loss'],     label='Train loss',      color='steelblue',  linewidth=1.8)
+ax1.plot(history.history['val_loss'], label='Validation loss', color='darkorange', linewidth=1.8, linestyle='--')
+ax1.set_title("Training Loss (MSE) vs Epoch")
+ax1.set_xlabel("Epoch")
+ax1.set_ylabel("MSE (scaled)")
+ax1.legend()
+ax1.grid(True, alpha=0.3)
+
+# ── RIGHT : Predicted vs Actual ───────────────────────────────────────────────
+ax2 = axes[1]
+
+# Real / actual values
+ax2.plot(train_idx, y_train_actual, color='gray',   alpha=0.4, linewidth=1,   label='Actual (all data)')
+ax2.plot(test_idx,  y_test_actual,  color='gray',   alpha=0.4, linewidth=1)
+
+# Training predictions
+ax2.scatter(train_idx, y_train_pred, color='steelblue',  s=8,  marker='o',
+            label='Train predicted', alpha=0.7)
+
+# Testing predictions
+ax2.scatter(test_idx,  y_test_pred,  color='crimson',     s=18, marker='^',
+            label='Test predicted',  alpha=0.9, zorder=5)
+
+# Vertical line separating train / test regions
+ax2.axvline(x=split, color='black', linestyle='--', linewidth=1.2, label='Train | Test boundary')
+
+ax2.set_title("Predicted vs Actual Landing Distance")
+ax2.set_xlabel("Sample index")
+ax2.set_ylabel("Landing distance (km)")
+ax2.legend(fontsize=8)
+ax2.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig("topic2_reentry_plot.png", dpi=150, bbox_inches='tight')
+plt.show()
+print("Plot saved → topic2_reentry_plot.png")
