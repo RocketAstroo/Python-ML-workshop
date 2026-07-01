@@ -1,0 +1,170 @@
+clear;
+
+% --- 1. THE 3-BODY PARAMETERS ---
+p.G = 6.6743e-11;
+p.m_E = 5.9722e24;
+p.m_M = 7.3476e22;
+p.mu_E = p.G * p.m_E;
+p.mu_M = p.G * p.m_M;
+
+p.R_E = 6.3781e6;       
+p.R_M_body = 1.737e6;   
+p.D_Moon = 384400e3;    
+
+p.omega_M = sqrt(p.mu_E / p.D_Moon^3); 
+p.moon_initial_angle = 112.6 * (pi / 180); 
+
+% SPEED UPGRADE: Relaxed tolerances to 1e-8 for lightning-fast calculations
+options_standard = odeset('RelTol', 1e-8, 'AbsTol', 1e-8);
+options_event = odeset('RelTol', 1e-8, 'AbsTol', 1e-8, 'Events', @(t,x) perilune_event(t,x,p));
+
+% SPEED UPGRADE: Lower frame count for faster rendering
+frames = 150; 
+pause_delay = 2.0 / frames;
+
+% --- 2. PHASE 1: LEO PARKING ORBIT ---
+alt_parking = 500e3;
+r1 = p.R_E + alt_parking;
+v_parking = sqrt(p.mu_E / r1);
+x_0 = [r1; 0; 0; 0; v_parking; 0];
+
+period_1 = 2 * pi * sqrt(r1^3 / p.mu_E);
+t_span_1 = linspace(0, period_1, frames);
+[t_1, x_1] = ode45(@(t,x) f_3body(t,x,p), t_span_1, x_0, options_standard);
+
+% --- 3. PHASE 2: EARTH BOUND MANEUVER (EBN) ---
+v_old1 = x_1(end, 4:6)';
+v_new1 = v_old1 + (1200 * (v_old1 / norm(v_old1)));
+x_burn1 = [x_1(end, 1:3)'; v_new1];
+
+E1 = (norm(v_new1)^2 / 2) - (p.mu_E / r1);
+a1 = -p.mu_E / (2 * E1);
+period_2 = 2 * pi * sqrt(a1^3 / p.mu_E);
+t_span_2 = linspace(t_1(end), t_1(end) + period_2, frames);
+[t_2, x_2] = ode45(@(t,x) f_3body(t,x,p), t_span_2, x_burn1, options_standard);
+
+% --- 4. PHASE 3: TRANS-LUNAR INJECTION (TLI) TO INTERCEPT ---
+v_old2 = x_2(end, 4:6)';
+v_new2 = v_old2 + (1855 * (v_old2 / norm(v_old2)));
+x_burn2 = [x_2(end, 1:3)'; v_new2];
+
+% Coast until the Event Function stops us exactly at closest approach!
+days_max = 6 * 24 * 3600; 
+[t_3, x_3, t_event, x_event, ie] = ode45(@(t,x) f_3body(t,x,p), [t_2(end), t_2(end) + days_max], x_burn2, options_event);
+
+% --- 5. PHASE 4: LUNAR ORBIT INSERTION (LOI) ---
+t_encounter = t_3(end);
+r_sat_enc = x_3(end, 1:3)';
+v_sat_enc = x_3(end, 4:6)';
+
+theta_M = p.moon_initial_angle + (p.omega_M * t_encounter);
+v_moon_enc = [-p.D_Moon * p.omega_M * sin(theta_M); p.D_Moon * p.omega_M * cos(theta_M); 0];
+
+v_rel_moon = v_sat_enc - v_moon_enc;
+
+% THE BRAKES: Subtract 600 m/s from the relative velocity
+delta_v_loi = 600; 
+v_rel_new = v_rel_moon - (delta_v_loi * (v_rel_moon / norm(v_rel_moon)));
+
+v_sat_new = v_rel_new + v_moon_enc;
+x_burn3 = [r_sat_enc; v_sat_new];
+
+% Simulate Lunar Orbit for 8 Days
+days_orbit = 8 * 24 * 3600;
+t_span_4 = linspace(t_encounter, t_encounter + days_orbit, frames * 2);
+[t_4, x_4] = ode45(@(t,x) f_3body(t,x,p), t_span_4, x_burn3, options_standard);
+
+% --- 6. ANIMATION VISUAL SETUP ---
+figure(1); set(gcf, 'Color', 'k', 'Position', [100, 100, 1000, 800]); 
+[X,Y,Z] = sphere;
+
+% Draw Earth
+surf(X * p.R_E, Y * p.R_E, Z * p.R_E, 'FaceAlpha', 0.9, 'EdgeColor', 'none');
+hold on; axis equal; grid on; set(gca, 'Color', 'k', 'XColor', 'w', 'YColor', 'w', 'ZColor', 'w');
+
+% Draw Moon's Orbital Track
+theta_full = linspace(0, 2*pi, 100);
+plot3(p.D_Moon*cos(theta_full), p.D_Moon*sin(theta_full), zeros(1,100), 'w--', 'Color', [1 1 1 0.2]);
+
+% Draw the Bright White Moon (Magnified 8x)
+vis_moon_rad = p.R_M_body * 8; 
+moon_surf = surf(X * vis_moon_rad, Y * vis_moon_rad, Z * vis_moon_rad, 'FaceColor', 'w', 'EdgeColor', 'none');
+
+% Faint background tracks for the Satellite
+plot3(x_1(:,1), x_1(:,2), x_1(:,3), 'Color', [0 1 0 0.3], 'LineWidth', 1);
+plot3(x_2(:,1), x_2(:,2), x_2(:,3), 'Color', [1 1 0 0.3], 'LineWidth', 1);
+plot3(x_3(:,1), x_3(:,2), x_3(:,3), 'Color', [1 0.5 0 0.3], 'LineWidth', 1);
+plot3(x_4(:,1), x_4(:,2), x_4(:,3), 'Color', [0 1 1 0.4], 'LineWidth', 1); 
+
+axis([-4.5e8 4.5e8 -4.5e8 4.5e8 -1e7 1e7]);
+view(2); 
+
+sat_marker = plot3(x_1(1,1), x_1(1,2), x_1(1,3), 'ws', 'MarkerFaceColor', 'w', 'MarkerSize', 6);
+title_obj = title('Phase 1: Parking Orbit', 'Color', 'g', 'FontSize', 16);
+
+% --- 7. MASTER ANIMATION LOOP ---
+all_t = [t_1; t_2; t_3; t_4];
+all_x = [x_1; x_2; x_3; x_4];
+phase_breaks = [length(t_1), length(t_1)+length(t_2), length(t_1)+length(t_2)+length(t_3)];
+
+for i = 1:length(all_t)
+    set(sat_marker, 'XData', all_x(i,1), 'YData', all_x(i,2), 'ZData', all_x(i,3));
+    
+    theta = p.moon_initial_angle + (p.omega_M * all_t(i));
+    m_x = p.D_Moon * cos(theta);
+    m_y = p.D_Moon * sin(theta);
+    set(moon_surf, 'XData', (X * vis_moon_rad) + m_x, 'YData', (Y * vis_moon_rad) + m_y, 'ZData', Z * vis_moon_rad);
+    
+    if i == phase_breaks(1)
+        set(title_obj, 'String', 'Phase 2: Earth Bound Maneuver (EBN)', 'Color', 'y');
+        set(sat_marker, 'MarkerFaceColor', 'y', 'MarkerSize', 12); pause(1); set(sat_marker, 'MarkerSize', 6);
+    elseif i == phase_breaks(2)
+        set(title_obj, 'String', 'Phase 3: Trans-Lunar Injection (TLI)', 'Color', 'r');
+        set(sat_marker, 'MarkerFaceColor', 'r', 'MarkerSize', 12); pause(1); set(sat_marker, 'MarkerSize', 6);
+    elseif i == phase_breaks(3)
+        set(title_obj, 'String', 'Phase 4: Lunar Orbit Insertion (LOI) BURN!', 'Color', 'c');
+        set(sat_marker, 'MarkerFaceColor', 'c', 'MarkerEdgeColor', 'w', 'MarkerSize', 16); pause(1.5); set(sat_marker, 'MarkerSize', 6);
+        set(title_obj, 'String', 'Phase 5: Captured in Lunar Orbit (Cycloid)', 'Color', 'c');
+    end
+    
+    drawnow;
+    
+    if i > phase_breaks(2)
+        pause(pause_delay / 4);
+    else
+        pause(pause_delay);
+    end
+end
+
+%% --- DYNAMICS & EVENTS ---
+function x_dot = f_3body(t, state, p)
+    r_sat = state(1:3);
+    v_sat = state(4:6);
+    
+    theta_M = p.moon_initial_angle + (p.omega_M * t);
+    r_moon = [p.D_Moon * cos(theta_M); p.D_Moon * sin(theta_M); 0];
+    
+    vec_earth_to_sat = r_sat;
+    vec_moon_to_sat = r_sat - r_moon;
+    
+    accel_earth = -(p.mu_E / norm(vec_earth_to_sat)^3) * vec_earth_to_sat;
+    accel_moon  = -(p.mu_M / norm(vec_moon_to_sat)^3) * vec_moon_to_sat;
+    
+    x_dot = [v_sat; accel_earth + accel_moon];
+end
+
+function [value, isterminal, direction] = perilune_event(t, state, p)
+    r_sat = state(1:3);
+    v_sat = state(4:6);
+    
+    theta_M = p.moon_initial_angle + (p.omega_M * t);
+    r_moon = [p.D_Moon * cos(theta_M); p.D_Moon * sin(theta_M); 0];
+    v_moon = [-p.D_Moon * p.omega_M * sin(theta_M); p.D_Moon * p.omega_M * cos(theta_M); 0];
+    
+    r_rel = r_sat - r_moon;
+    v_rel = v_sat - v_moon;
+    
+    value = dot(r_rel, v_rel); 
+    isterminal = 1; 
+    direction = 1;  
+end
