@@ -1,0 +1,126 @@
+clear;
+p = params();
+
+% --- 1. PRESENTATION SETTINGS ---
+frames_per_orbit = 200; 
+pause_delay = 3.0 / frames_per_orbit; 
+options = odeset('RelTol', 1e-12, 'AbsTol', 1e-12);
+
+% --- 2. ORBIT DEFINITIONS ---
+alt_parking = 500e3;        % 500 km Parking Orbit
+alt_target  = 20000e3;      % 20,000 km Target Orbit (e.g., GPS altitude)
+
+r1 = p.radius_earth + alt_parking;
+r2 = p.radius_earth + alt_target;
+a_transfer = (r1 + r2) / 2; % Semi-major axis of the transfer ellipse
+
+% Calculate required velocities analytically
+v_parking = sqrt(p.mu / r1);
+v_transfer_perigee = sqrt(p.mu * (2/r1 - 1/a_transfer));
+v_transfer_apogee  = sqrt(p.mu * (2/r2 - 1/a_transfer));
+v_target = sqrt(p.mu / r2);
+
+% Calculate the Delta-Vs
+delta_v1 = v_transfer_perigee - v_parking;
+delta_v2 = v_target - v_transfer_apogee;
+
+% --- 3. PHASE 1: PARKING ORBIT ---
+r_0 = [r1; 0; 0];
+v_0 = [0; v_parking; 0];
+x_0 = [r_0; v_0];
+
+period_1 = 2 * pi * sqrt(r1^3 / p.mu);
+t_span_1 = linspace(0, period_1, frames_per_orbit); 
+[t_1, x_1] = ode45(@(t,x) f(t,x), t_span_1, x_0, options);
+
+% --- 4. PHASE 2: TRANSFER ORBIT (Exactly half an orbit) ---
+% BURN 1: Add delta_v1 at perigee
+r_burn1 = x_1(end, 1:3)';
+v_old1 = x_1(end, 4:6)';
+v_new1 = v_old1 + (delta_v1 * (v_old1 / norm(v_old1)));
+x_burn1 = [r_burn1; v_new1];
+
+period_transfer = 2 * pi * sqrt(a_transfer^3 / p.mu);
+t_span_2 = linspace(0, period_transfer / 2, frames_per_orbit); % Only coast for HALF an orbit
+[t_2, x_2] = ode45(@(t,x) f(t,x), t_span_2, x_burn1, options);
+
+% --- 5. PHASE 3: TARGET CIRCULAR ORBIT ---
+% BURN 2: Add delta_v2 at apogee
+r_burn2 = x_2(end, 1:3)';
+v_old2 = x_2(end, 4:6)';
+v_new2 = v_old2 + (delta_v2 * (v_old2 / norm(v_old2)));
+x_burn2 = [r_burn2; v_new2];
+
+period_3 = 2 * pi * sqrt(r2^3 / p.mu);
+t_span_3 = linspace(0, period_3, frames_per_orbit); 
+[t_3, x_3] = ode45(@(t,x) f(t,x), t_span_3, x_burn2, options);
+
+% --- 6. ANIMATION VISUAL SETUP ---
+figure(1); set(gcf, 'Color', 'k'); 
+[X,Y,Z] = sphere;
+surf(X * p.radius_earth, Y * p.radius_earth, Z * p.radius_earth, 'FaceAlpha', 0.8, 'EdgeColor', 'none');
+hold on; axis equal; grid on; set(gca, 'Color', 'k', 'XColor', 'w', 'YColor', 'w', 'ZColor', 'w');
+
+% Draw faint background tracks
+plot3(x_1(:,1), x_1(:,2), x_1(:,3), 'Color', [0 1 0 0.3], 'LineWidth', 1); % Inner Circle
+plot3(x_2(:,1), x_2(:,2), x_2(:,3), 'Color', [1 1 0 0.3], 'LineWidth', 1); % Ellipse
+plot3(x_3(:,1), x_3(:,2), x_3(:,3), 'Color', [0 1 1 0.3], 'LineWidth', 1); % Outer Circle
+
+sat_marker = plot3(x_1(1,1), x_1(1,2), x_1(1,3), 'ws', 'MarkerFaceColor', 'w', 'MarkerSize', 10);
+title_obj = title('Phase 1: LEO Parking Orbit', 'Color', 'g', 'FontSize', 14);
+view(3);
+
+% --- 7. RUN ANIMATION LOOP ---
+
+% Phase 1
+for i = 1:frames_per_orbit
+    set(sat_marker, 'XData', x_1(i,1), 'YData', x_1(i,2), 'ZData', x_1(i,3));
+    drawnow; pause(pause_delay);
+end
+
+% Burn 1
+set(sat_marker, 'MarkerFaceColor', 'y', 'MarkerEdgeColor', 'r', 'MarkerSize', 16);
+set(title_obj, 'String', sprintf('BURN 1 (Perigee): +%.0f m/s', delta_v1), 'Color', 'y');
+pause(1.5); 
+
+% Phase 2
+set(title_obj, 'String', 'Phase 2: Coasting to Apogee', 'Color', 'y');
+set(sat_marker, 'MarkerFaceColor', 'y', 'MarkerEdgeColor', 'w', 'MarkerSize', 10);
+for i = 1:frames_per_orbit
+    set(sat_marker, 'XData', x_2(i,1), 'YData', x_2(i,2), 'ZData', x_2(i,3));
+    drawnow; pause(pause_delay);
+end
+
+% Burn 2
+set(sat_marker, 'MarkerFaceColor', 'c', 'MarkerEdgeColor', 'w', 'MarkerSize', 16);
+set(title_obj, 'String', sprintf('BURN 2 (Apogee): +%.0f m/s', delta_v2), 'Color', 'c');
+pause(1.5); 
+
+% Phase 3
+set(title_obj, 'String', 'Phase 3: Target Orbit Circularized', 'Color', 'c');
+set(sat_marker, 'MarkerFaceColor', 'c', 'MarkerEdgeColor', 'w', 'MarkerSize', 10);
+for i = 1:frames_per_orbit
+    set(sat_marker, 'XData', x_3(i,1), 'YData', x_3(i,2), 'ZData', x_3(i,3));
+    drawnow; pause(pause_delay);
+end
+
+%% --- FUNCTIONS ---
+function x_dot = f(time,state)
+    p = params();
+    r = state(1:3);
+    v = state(4:6);
+    r_dot = v;
+    rcap = r/norm(r);
+    force_gravity = (p.mu * p.mass / norm(r)^2) * (-rcap);
+    accel = force_gravity / p.mass;
+    v_dot = accel;
+    x_dot = [r_dot; v_dot];
+end
+
+function p = params()
+    p.mass = 10; 
+    p.radius_earth = 6.3781e6;
+    p.G = 6.6743e-11;
+    p.m_e = 5.9722e24;
+    p.mu = p.G * p.m_e;
+end
