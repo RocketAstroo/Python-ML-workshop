@@ -1,0 +1,106 @@
+clear;
+p = params();
+
+% --- 1. TIMING & RENDER SETUP ---
+frames_per_orbit = 200; 
+pause_delay = 3.0 / frames_per_orbit; % Forces exactly 3 seconds per orbit
+options = odeset('RelTol', 1e-12, 'AbsTol', 1e-12);
+
+% --- 2. INITIALIZATION (500 km Parking Orbit) ---
+alt_0 = 500e3; 
+r_0 = [p.radius_earth + alt_0; 0; 0];
+v_0_mag = sqrt(p.mu / norm(r_0));
+v_0 = [0; v_0_mag; 0];
+x_0 = [r_0; v_0];
+
+% --- 3. SIMULATE ORBIT 1: PARKING ---
+period_1 = 2 * pi * sqrt(norm(r_0)^3 / p.mu);
+t_span_1 = linspace(0, period_1, frames_per_orbit); 
+[t_1, x_1] = ode45(@(t,x) f(t,x), t_span_1, x_0, options);
+
+% --- 4. THE BURN (Delta-V Injection) ---
+r_burn = x_1(end, 1:3)';
+v_old = x_1(end, 4:6)';
+delta_v = 1500; % [m/s]
+v_direction = v_old / norm(v_old); 
+v_new = v_old + (delta_v * v_direction);
+x_burn = [r_burn; v_new];
+
+% --- 5. SIMULATE ORBIT 2: TRANSFER ---
+specific_energy = (norm(v_new)^2 / 2) - (p.mu / norm(r_burn));
+a_new = -p.mu / (2 * specific_energy);
+period_2 = 2 * pi * sqrt(a_new^3 / p.mu);
+t_span_2 = linspace(0, period_2, frames_per_orbit);
+[t_2, x_2] = ode45(@(t,x) f(t,x), t_span_2, x_burn, options);
+
+% --- 6. ANIMATION VISUAL SETUP ---
+figure(1); set(gcf, 'Color', 'k'); 
+
+% Draw the Multi-Colored Earth
+[X,Y,Z] = sphere;
+surf(X * p.radius_earth, Y * p.radius_earth, Z * p.radius_earth, 'FaceAlpha', 0.8, 'EdgeColor', 'none');
+hold on; axis equal; grid on; set(gca, 'Color', 'k', 'XColor', 'w', 'YColor', 'w', 'ZColor', 'w');
+
+% Draw faint background tracks (The "Highway")
+plot3(x_1(:,1), x_1(:,2), x_1(:,3), 'Color', [0 1 0 0.4], 'LineWidth', 1); % Faint Green
+plot3(x_2(:,1), x_2(:,2), x_2(:,3), 'Color', [1 0 0 0.4], 'LineWidth', 1); % Faint Red
+
+% Initialize the Satellite Marker
+sat_marker = plot3(x_1(1,1), x_1(1,2), x_1(1,3), 'ws', 'MarkerFaceColor', 'w', 'MarkerSize', 10);
+title_obj = title('Phase 1: Parking Orbit Coast', 'Color', 'w', 'FontSize', 14);
+view(3);
+
+% --- 7. RUN ANIMATION LOOP ---
+% Play Orbit 1 (3 seconds)
+for i = 1:frames_per_orbit
+    set(sat_marker, 'XData', x_1(i,1), 'YData', x_1(i,2), 'ZData', x_1(i,3));
+    drawnow;
+    pause(pause_delay);
+end
+
+% Visual Cue: Engine Burn
+set(sat_marker, 'MarkerFaceColor', 'y', 'MarkerEdgeColor', 'r', 'MarkerSize', 16);
+set(title_obj, 'String', sprintf('ENGINE BURN: Adding %d m/s', delta_v), 'Color', 'y');
+pause(1.5); % Freeze frame so the audience sees the burn point
+
+% Play Orbit 2 (3 seconds)
+set(title_obj, 'String', 'Phase 2: Transfer Orbit', 'Color', 'r');
+set(sat_marker, 'MarkerFaceColor', 'r', 'MarkerEdgeColor', 'w', 'MarkerSize', 10);
+for i = 1:frames_per_orbit
+    set(sat_marker, 'XData', x_2(i,1), 'YData', x_2(i,2), 'ZData', x_2(i,3));
+    drawnow;
+    pause(pause_delay);
+end
+
+% --- 8. POST-ANIMATION TELEMETRY ---
+% Stitch the data
+t_all = [t_1; t_1(end) + t_2]; 
+x_all = [x_1; x_2];
+
+figure(2);
+v_mag_all = sqrt(x_all(:,4).^2 + x_all(:,5).^2 + x_all(:,6).^2);
+plot(t_all, v_mag_all, 'k', 'LineWidth', 2);
+xline(t_1(end), 'r--', 'Delta-V Burn', 'LabelVerticalAlignment', 'bottom');
+title('Orbital Velocity vs Time'); xlabel('Time (s)'); ylabel('Velocity (m/s)');
+grid on;
+
+%% --- FUNCTIONS ---
+function x_dot = f(time,state)
+    p = params();
+    r = state(1:3);
+    v = state(4:6);
+    r_dot = v;
+    rcap = r/norm(r);
+    force_gravity = (p.mu * p.mass / norm(r)^2) * (-rcap);
+    accel = force_gravity / p.mass;
+    v_dot = accel;
+    x_dot = [r_dot; v_dot];
+end
+
+function p = params()
+    p.mass = 10; 
+    p.radius_earth = 6.3781e6;
+    p.G = 6.6743e-11;
+    p.m_e = 5.9722e24;
+    p.mu = p.G * p.m_e;
+end
