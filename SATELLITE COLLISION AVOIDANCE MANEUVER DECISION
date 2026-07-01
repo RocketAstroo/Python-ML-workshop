@@ -1,0 +1,307 @@
+# =============================================================================
+# TOPIC 3 : SATELLITE COLLISION AVOIDANCE MANEUVER DECISION
+# Feed-Forward Neural Network using TensorFlow / Keras
+#
+# PROBLEM :
+#   Two objects (satellite + debris) are approaching each other in orbit.
+#   Based on their relative position and velocity, the FFNN must decide
+#   which maneuver to apply:
+#
+#       Class 0 → NO maneuver needed     (objects will safely pass)
+#       Class 1 → RAISE orbit slightly   (small thrust upward)
+#       Class 2 → LOWER orbit slightly   (small thrust downward)
+#
+#   This is a CLASSIFICATION problem (predict a category, not a number).
+#
+# INPUTS (features) — relative geometry between satellite and debris:
+#   x1 - Relative distance       (km)       e.g.  1 – 50 km
+#   x2 - Relative radial velocity (km/s)    e.g. -2 –  2 km/s
+#   x3 - Relative cross-track position (km) e.g. -20 – 20 km
+#   x4 - Time to closest approach (seconds) e.g.  10 – 600 s
+#   x5 - Miss distance (km)                 e.g.  0 –  5 km
+#
+# OUTPUT :
+#   Class label (0, 1, or 2) — one of three maneuver decisions
+#
+# DATA GENERATION NOTE :
+#   We use rule-based logic to assign labels (mirroring what an expert
+#   would decide), then train the FFNN to learn those rules from data.
+#
+# SPLIT : First 80% → Training | Last 20% → Testing
+# =============================================================================
+
+import numpy as np
+import matplotlib.pyplot as plt
+import tensorflow as tf
+from tensorflow import keras
+
+# ── reproducibility ──────────────────────────────────────────────────────────
+np.random.seed(7)
+tf.random.set_seed(7)
+
+
+# =============================================================================
+# SECTION 1 : GENERATE RAW DATA  (no scaling here)
+# =============================================================================
+
+N = 600   # total samples
+
+# Raw input features  (unscaled, physically meaningful)
+rel_distance   = np.random.uniform(1,   50,  N)   # km
+rel_velocity   = np.random.uniform(-2,   2,  N)   # km/s  (positive = approaching)
+cross_track    = np.random.uniform(-20, 20,  N)   # km
+time_to_ca     = np.random.uniform(10, 600,  N)   # seconds  (CA = closest approach)
+miss_distance  = np.random.uniform(0,    5,  N)   # km
+
+# ── Label assignment (rule-based expert logic) ────────────────────────────────
+#   Rule:
+#     If miss distance > 2 km                     → NO maneuver     (Class 0)
+#     If miss distance ≤ 2 km AND cross_track > 0 → RAISE orbit     (Class 1)
+#     If miss distance ≤ 2 km AND cross_track ≤ 0 → LOWER orbit     (Class 2)
+#   Add small label noise (5%) to make the problem realistic.
+
+labels = np.where(
+    miss_distance > 2.0,
+    0,
+    np.where(cross_track > 0, 1, 2)
+)
+
+# 5 % random label flip — simulates sensor uncertainty / ambiguous cases
+flip_mask = np.random.rand(N) < 0.05
+labels[flip_mask] = np.random.randint(0, 3, flip_mask.sum())
+
+# Stack into input matrix  shape: (600, 5)
+X_raw = np.column_stack([rel_distance, rel_velocity, cross_track,
+                          time_to_ca, miss_distance])
+y_raw = labels   # integer class labels: 0, 1, or 2
+
+print("=" * 55)
+print("SECTION 1 : Raw Data Summary")
+print("=" * 55)
+print(f"  Total samples      : {N}")
+print(f"  Input shape        : {X_raw.shape}")
+print(f"  Class distribution :")
+for c, name in enumerate(["No maneuver (0)", "Raise orbit (1)", "Lower orbit (2)"]):
+    print(f"    Class {c} — {name:<20}: {(y_raw==c).sum()} samples")
+print()
+
+
+# =============================================================================
+# SECTION 2 : TRAIN / TEST SPLIT  (80% train, 20% test — ordered)
+# =============================================================================
+
+split = int(0.8 * N)          # 480 train, 120 test
+
+X_train_raw = X_raw[:split]
+X_test_raw  = X_raw[split:]
+
+y_train_raw = y_raw[:split]
+y_test_raw  = y_raw[split:]
+
+print("SECTION 2 : Train / Test Split")
+print("-" * 55)
+print(f"  Training samples : {X_train_raw.shape[0]}")
+print(f"  Testing  samples : {X_test_raw.shape[0]}")
+print()
+
+
+# =============================================================================
+# SECTION 3 : FEATURE SCALING  (Min-Max using TRAINING stats only)
+#
+#   Neural networks learn faster when inputs are in [0, 1].
+#   Labels are integers (0, 1, 2) — no scaling needed for those.
+# =============================================================================
+
+X_min = X_train_raw.min(axis=0)
+X_max = X_train_raw.max(axis=0)
+
+X_train = (X_train_raw - X_min) / (X_max - X_min)
+X_test  = (X_test_raw  - X_min) / (X_max - X_min)
+
+# Labels stay as integers for sparse categorical crossentropy
+y_train = y_train_raw
+y_test  = y_test_raw
+
+print("SECTION 3 : Feature Scaling (Min-Max)")
+print("-" * 55)
+print(f"  Feature min (train) : {X_min.round(2)}")
+print(f"  Feature max (train) : {X_max.round(2)}")
+print(f"  X_train value range : {X_train.min():.2f} – {X_train.max():.2f}")
+print()
+
+
+# =============================================================================
+# SECTION 4 : BUILD THE FEED-FORWARD NEURAL NETWORK (CLASSIFIER)
+#
+#   Architecture :
+#     Input layer  → 5 neurons
+#     Hidden 1     → 16 neurons, ReLU
+#     Hidden 2     → 8  neurons, ReLU
+#     Output layer → 3 neurons, Softmax
+#
+#   Softmax: converts raw scores into probabilities that sum to 1.
+#            The class with the highest probability is the decision.
+#   Example output: [0.05, 0.87, 0.08] → Class 1 (Raise orbit)
+# =============================================================================
+
+model = keras.Sequential([
+    keras.layers.Input(shape=(5,)),               # 5 input features
+    keras.layers.Dense(16, activation='relu'),     # hidden layer 1
+    keras.layers.Dense(8,  activation='relu'),     # hidden layer 2
+    keras.layers.Dense(3,  activation='softmax')   # 3 output classes
+], name="CollisionAvoidance_FFNN")
+
+model.summary()
+print()
+
+
+# =============================================================================
+# SECTION 5 : COMPILE AND TRAIN
+#
+#   Loss     : sparse_categorical_crossentropy
+#              — standard loss for multi-class classification
+#              — "sparse" means labels are integers (not one-hot vectors)
+#   Optimizer: Adam
+#   Metric   : accuracy (% of correct predictions)
+# =============================================================================
+
+model.compile(
+    optimizer='adam',
+    loss='sparse_categorical_crossentropy',
+    metrics=['accuracy']
+)
+
+history = model.fit(
+    X_train, y_train,
+    epochs=150,
+    batch_size=32,
+    validation_split=0.1,
+    verbose=1
+)
+
+print("SECTION 5 : Training complete")
+print("-" * 55)
+print(f"  Final training accuracy   : {history.history['accuracy'][-1]*100:.1f}%")
+print(f"  Final validation accuracy : {history.history['val_accuracy'][-1]*100:.1f}%")
+print()
+
+
+# =============================================================================
+# SECTION 6 : PREDICT CLASS LABELS
+#
+#   model.predict() → probability array shape (n, 3)
+#   np.argmax(...)  → pick the class with the highest probability
+# =============================================================================
+
+y_train_prob = model.predict(X_train, verbose=0)
+y_test_prob  = model.predict(X_test,  verbose=0)
+
+y_train_pred = np.argmax(y_train_prob, axis=1)   # predicted class 0/1/2
+y_test_pred  = np.argmax(y_test_prob,  axis=1)
+
+# Accuracy (manual check)
+train_acc = np.mean(y_train_pred == y_train) * 100
+test_acc  = np.mean(y_test_pred  == y_test)  * 100
+print(f"  Manual check — Train accuracy : {train_acc:.1f}%")
+print(f"  Manual check — Test  accuracy : {test_acc:.1f}%")
+print()
+
+train_idx = np.arange(split)
+test_idx  = np.arange(split, N)
+
+
+# =============================================================================
+# SECTION 7 : PLOT — Training & Testing Predictions vs Real Labels
+#
+#   Single figure, 2 plots:
+#     Left  : Accuracy curve (training vs validation across epochs)
+#     Right : Actual class vs Predicted class for every sample
+#             Train = circles (o), Test = triangles (^)
+#             Correct predictions overlap actual → easy to spot errors
+# =============================================================================
+
+class_colors = {0: 'seagreen', 1: 'steelblue', 2: 'darkorange'}
+class_names  = {0: 'No maneuver', 1: 'Raise orbit', 2: 'Lower orbit'}
+# =============================================================================
+# Figure 1: Training Accuracy vs Epoch
+# =============================================================================
+plt.figure(figsize=(7,5))
+
+plt.plot(history.history['accuracy'],
+         label='Train Accuracy',
+         color='steelblue',
+         linewidth=1.8)
+
+plt.plot(history.history['val_accuracy'],
+         label='Validation Accuracy',
+         color='darkorange',
+         linestyle='--',
+         linewidth=1.8)
+
+plt.title("Training Accuracy vs Epoch")
+plt.xlabel("Epoch")
+plt.ylabel("Accuracy")
+plt.ylim(0, 1.05)
+plt.legend()
+plt.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig("training_accuracy.png", dpi=300, bbox_inches='tight')
+plt.show()
+
+# =============================================================================
+# Figure 2: Predicted vs Actual Maneuver Class
+# =============================================================================
+plt.figure(figsize=(10,5))
+
+# Actual labels
+plt.step(np.arange(N), y_raw,
+         color='gray',
+         alpha=0.35,
+         linewidth=1.0,
+         label='Actual (all data)',
+         where='mid')
+
+# Training predictions
+plt.scatter(train_idx,
+            y_train_pred,
+            c=[class_colors[p] for p in y_train_pred],
+            s=10,
+            marker='o',
+            alpha=0.6,
+            label='Train predicted',
+            zorder=3)
+
+# Testing predictions
+plt.scatter(test_idx,
+            y_test_pred,
+            c=[class_colors[p] for p in y_test_pred],
+            s=35,
+            marker='^',
+            alpha=0.9,
+            edgecolors='black',
+            linewidths=0.4,
+            label='Test predicted',
+            zorder=5)
+
+# Train/Test split
+plt.axvline(x=split,
+            color='black',
+            linestyle='--',
+            linewidth=1.2,
+            label='Train | Test boundary')
+
+plt.yticks([0, 1, 2],
+           ['0 — No maneuver',
+            '1 — Raise orbit',
+            '2 — Lower orbit'])
+
+plt.title("Predicted vs Actual Maneuver Class")
+plt.xlabel("Sample Index")
+plt.ylabel("Maneuver Class")
+plt.legend(fontsize=8, loc='upper left')
+plt.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig("predicted_vs_actual.png", dpi=300, bbox_inches='tight')
+plt.show()
