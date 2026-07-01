@@ -1,0 +1,120 @@
+%% Clearing the workspace
+clear;
+
+%% Consts
+p = params();
+
+%% Time setup
+start_time = 0; % [s]
+no_of_orbits = 2; % Changed to exactly 2 orbits
+end_time = no_of_orbits * p.duration_orbit; % [s]
+
+% Force an evenly spaced time array for smooth animation
+frames_per_orbit = 200; 
+total_frames = no_of_orbits * frames_per_orbit;
+sim_time = linspace(start_time, end_time, total_frames); 
+
+%% Initialization of the physical quantities 
+r_0 = [p.radius_orbit; 0; 0]; % [m]
+v_0_mag = sqrt(p.mu / p.radius_orbit);
+v_0 = [0; v_0_mag * cos(p.inclination_orbit); v_0_mag * sin(p.inclination_orbit)]; % [m/s]
+
+%% Initialization of the state
+x_0 = [r_0; v_0];
+
+%% Numerical integration
+options = odeset('RelTol', 1e-12, 'AbsTol', 1e-12);
+[t_out, x_out] = ode45(@(time,state) f(time,state), sim_time, x_0, options);
+
+%% Extract Data
+r = x_out(:,1:3);
+v = x_out(:,4:6);
+
+%% --- ANIMATION PHASE ---
+figure(1);
+set(gcf, 'Color', 'k'); % Set background to black for space
+
+% Draw the Earth
+[X,Y,Z] = sphere;
+X = X * p.radius_earth;
+Y = Y * p.radius_earth;
+Z = Z * p.radius_earth;
+
+% Removed the 'b' color override to restore the multi-colored topological map
+surf(X, Y, Z, 'FaceAlpha', 0.5, 'EdgeColor', 'none');
+hold on; grid on; axis equal;
+set(gca, 'Color', 'k', 'XColor', 'w', 'YColor', 'w', 'ZColor', 'w');
+
+% Plot the faint orbital track in the background
+plot3(r(:,1), r(:,2), r(:,3), 'Color', [0 1 1 0.4], 'LineWidth', 1);
+
+% Initialize the Satellite Marker (A solid white square)
+sat_marker = plot3(r(1,1), r(1,2), r(1,3), 'ws', 'MarkerFaceColor', 'w', 'MarkerSize', 10);
+
+title(sprintf("Satellite Orbit Animation (%d Orbits)", no_of_orbits), 'Color', 'w');
+xlabel('X (m)'); ylabel('Y (m)'); zlabel('Z (m)');
+view(3);
+
+% --- TIMING CONTROL ---
+% 3 seconds per orbit divided by the number of frames per orbit
+pause_delay = 3.0 / frames_per_orbit; 
+
+% The Animation Loop
+for i = 1:length(t_out)
+    % Update the X, Y, and Z coordinates of the marker
+    set(sat_marker, 'XData', r(i,1), 'YData', r(i,2), 'ZData', r(i,3));
+    
+    % Force MATLAB to render the frame
+    drawnow; 
+    
+    % Force the exact speed
+    pause(pause_delay); 
+end
+
+%% --- POST-ANIMATION GRAPHS ---
+figure(2);
+plot(t_out, r(:,1), 'r', t_out, r(:,2), 'g', t_out, r(:,3), 'b', 'LineWidth', 1.5);
+legend('x', 'y', 'z');
+title('Position vs Time');
+xlabel('Time (s)'); ylabel('Position (m)');
+grid on;
+
+figure(3);
+plot(t_out, v(:,1), 'r', t_out, v(:,2), 'g', t_out, v(:,3), 'b', 'LineWidth', 1.5);
+legend('vx', 'vy', 'vz');
+title('Velocity vs Time');
+xlabel('Time (s)'); ylabel('Velocity (m/s)');
+grid on;
+
+
+%% --- FUNCTIONS ---
+function x_dot = f(time,state)
+    p = params();
+    r = state(1:3);
+    v = state(4:6);
+    r_dot = v;
+    rcap = r/norm(r);
+    force_gravity = (p.mu * p.mass / norm(r)^2) * (-rcap);
+    accel = force_gravity / p.mass;
+    v_dot = accel;
+    x_dot = [r_dot; v_dot];
+end
+
+function p = params()
+    % Satellite parameters
+    p.mass = 10; % [kg]
+    p.J_inertia = [0.050, 0, 0;
+                   0, 0.1, 0;
+                   0, 0, 0.1]; % [kg.m^2]
+    
+    % Orbital parameters
+    p.radius_earth = 6.3781e6;
+    p.G = 6.6743e-11;
+    p.m_e = 5.9722e24;
+    p.mu = p.G * p.m_e;
+    p.inclination_orbit = 30 * (pi/180);
+    p.altitude_orbit = 600e3;
+    p.radius_orbit = p.altitude_orbit + p.radius_earth;
+    p.v_mag = sqrt(p.mu / p.radius_orbit);
+    p.duration_orbit = (2 * pi * p.radius_orbit) / p.v_mag;
+end
